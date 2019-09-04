@@ -115,7 +115,7 @@ class TrelloCard(IssuePlugin):
         super(TrelloCard, self).__init__()
         self.client_errors = []
         self.additial_fields = []
-        
+
     def _get_group_description(self, request, group, event):
         """
         Return group description in markdown-compatible format.
@@ -243,7 +243,7 @@ class TrelloCard(IssuePlugin):
             'required': True,
         }
         token_value = get_from_initial(initial, 'token')
-       
+
         if token_value:
             token['has_saved_value'] = True
             token['prefix'] = token_value[:6]
@@ -282,5 +282,5 @@ class TrelloCard(IssuePlugin):
             self.reset_options(project=project)
             self.client_errors = []
             raise PluginError(errors[0])
-            
+
         return config

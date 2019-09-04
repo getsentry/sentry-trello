@@ -35,6 +35,7 @@ tests_require = [
     'exam',
     'flake8>=2.0,<2.1',
     'responses',
+    'betamax'
 ]
 
 setup(

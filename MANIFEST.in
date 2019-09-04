@@ -1,2 +1,2 @@
 include setup.py README.md MANIFEST.in LICENSE
-global-exclude *~
+recursive-include sentry_trello/templates *

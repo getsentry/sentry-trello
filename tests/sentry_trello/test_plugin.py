@@ -4,7 +4,7 @@ import responses
 
 from django.core.urlresolvers import reverse
 from exam import fixture
-from sentry.models import GroupMeta
+from sentry.models import GroupMeta, AuditLogEntry, AuditLogEntryEvent, ProjectOption
 from sentry.plugins import register, unregister
 from sentry.testutils import TestCase
 from sentry.utils import json
@@ -53,16 +53,22 @@ class TrelloPluginTest(TestCase):
     @fixture
     def action_path(self):
         project = self.project
-        return reverse('sentry-group-plugin-action', args=[
-            project.organization.slug, project.slug, self.group.id, self.plugin.slug,
-        ])
+        return reverse('sentry-group-plugin-action', kwargs={
+            "organization_slug": project.organization.slug,
+            "project_slug": project.slug,
+            "group_id": self.group.id,
+            "slug": self.plugin.slug,
+        })
 
     @fixture
     def configure_path(self):
         project = self.project
-        return reverse('sentry-configure-project-plugin', args=[
-            project.organization.slug, project.slug, self.plugin.slug,
-        ])
+        return reverse('sentry-api-0-project-plugin-details',
+            kwargs={
+                "organization_slug": project.organization.slug,
+                "project_slug": project.slug,
+                "plugin_id": self.plugin.slug,
+            })
 
     def test_create_issue_renders(self):
         project = self.project
@@ -108,6 +114,58 @@ class TrelloPluginTest(TestCase):
                 'name': 'foo',
             }
 
+    def test_can_get_config(self):
+        self.login_as(user=self.user)
+        response = self.client.get(self.configure_path)
+        assert response.status_code == 200
+        assert response.data["id"] == "trello"
+        assert response.data["config"] == [{'readonly': False, 'choices': None, 'placeholder': None, 'name': u'key', 'help': None, 'defaultValue': None, 'required': True, 'type': 'text', 'value': None, 'label': u'Trello API Key'}, {'help': None, 'prefix': '', 'label': u'Trello API Token', 'placeholder': None, 'name': u'token', 'defaultValue': None, 'required': True, 'hasSavedValue': False, 'value': None, 'choices': None, 'readonly': False, 'type': 'secret'}]
+
+    def test_can_get_config_with_options(self):
+        project = self.project
+        plugin = self.plugin
+
+        plugin.set_option('key', 'foo', project)
+        plugin.set_option('token', 'bar', project)
+
+        self.login_as(self.user)
+
+        with trello_mock():
+            response = self.client.get(self.configure_path)
+        assert response.status_code == 200
+        assert response.data["id"] == "trello"
+        assert response.data["config"] == [{'readonly': False, 'choices': None, 'placeholder': None, 'name': u'key', 'help': None, 'defaultValue': u'foo', 'required': True, 'type': 'text', 'value': u'foo', 'label': u'Trello API Key'}, {'help': None, 'prefix': u'bar', 'label': u'Trello API Token', 'placeholder': None, 'name': u'token', 'defaultValue': None, 'required': False, 'hasSavedValue': True, 'value': None, 'choices': None, 'readonly': False, 'type': 'secret'}, {'readonly': False, 'choices': (('', '--'), ('3', 'Bar')), 'placeholder': None, 'name': u'organization', 'help': None, 'defaultValue': None, 'required': True, 'type': 'select', 'value': None, 'label': u'Trello Organization'}]
+
+    def test_can_enable_plugin(self):
+        self.login_as(user=self.user)
+        self.plugin.disable(self.project)
+
+        audit = AuditLogEntry.objects.filter(target_object=self.project.id)
+        assert not audit
+
+        response = self.client.post(self.configure_path)
+        audit = AuditLogEntry.objects.get(target_object=self.project.id)
+        assert audit.event == AuditLogEntryEvent.INTEGRATION_ADD
+        assert response.status_code == 201, (response.status_code, response.content)
+
+        assert ProjectOption.objects.get(key="trello:enabled", project=self.project).value is True
+        audit.delete()
+
+    def test_can_disable_plugin(self):
+        self.login_as(user=self.user)
+        self.plugin.enable(self.project)
+
+        audit = AuditLogEntry.objects.filter(target_object=self.project.id)
+        assert not audit
+
+        response = self.client.delete(self.configure_path)
+        audit = AuditLogEntry.objects.get(target_object=self.project.id)
+        assert audit.event == AuditLogEntryEvent.INTEGRATION_REMOVE
+        assert response.status_code == 204, (response.status_code, response.content)
+
+        assert ProjectOption.objects.get(key="trello:enabled", project=self.project).value is False
+        audit.delete()
+
     @responses.activate
     def test_create_issue_with_fetch_errors(self):
         project = self.project
@@ -123,48 +181,21 @@ class TrelloPluginTest(TestCase):
         assert response.status_code == 200, vars(response)
         self.assertTemplateUsed(response, 'sentry_trello/plugin_misconfigured.html')
 
-    def test_configure_renders(self):
-        self.login_as(self.user)
-        with trello_mock():
-            response = self.client.get(self.configure_path)
-        assert response.status_code == 200
-        self.assertTemplateUsed(response, 'sentry/plugins/project_configuration.html')
-        assert '<input type="hidden" name="plugin" value="trello" />' in response.content
-        assert 'name="trello-token"' in response.content
-        assert 'name="trello-key"' in response.content
-        assert 'name="trello-organization"' not in response.content
-
     def test_configure_saves_options(self):
         self.login_as(self.user)
         with trello_mock():
-            response = self.client.post(self.configure_path, {
+            response = self.client.put(self.configure_path,
+            content_type="application/json",
+            data=json.dumps({
                 'plugin': 'trello',
-                'trello-token': 'foo',
-                'trello-key': 'bar',
+                'token': 'foo',
+                'key': 'bar',
+                'organization': None
             })
-        assert response.status_code == 302, show_response_error(response)
+            )
+        assert response.status_code == 200, show_response_error(response)
 
         project = self.project
         plugin = self.plugin
-
         assert plugin.get_option('token', project) == 'foo'
         assert plugin.get_option('key', project) == 'bar'
-
-    def test_configure_renders_with_auth(self):
-
-        project = self.project
-        plugin = self.plugin
-
-        plugin.set_option('key', 'foo', project)
-        plugin.set_option('token', 'bar', project)
-
-        self.login_as(self.user)
-
-        with trello_mock():
-            response = self.client.get(self.configure_path)
-        assert response.status_code == 200
-        self.assertTemplateUsed(response, 'sentry/plugins/project_configuration.html')
-        assert '<input type="hidden" name="plugin" value="trello" />' in response.content
-        assert 'name="trello-token"' in response.content
-        assert 'name="trello-key"' in response.content
-        assert 'name="trello-organization"' in response.content
