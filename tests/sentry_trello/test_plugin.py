@@ -5,7 +5,7 @@ import responses
 from django.core.urlresolvers import reverse
 from exam import fixture
 from sentry.models import GroupMeta, AuditLogEntry, AuditLogEntryEvent, ProjectOption
-from sentry.plugins import register, unregister
+from sentry.plugins.base import register, unregister
 from sentry.testutils import TestCase
 from sentry.utils import json
 
